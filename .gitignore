@@ -66,6 +66,7 @@ htmlcov/
 *.tar.gz
 debug_*.py
 debug_output.txt
+check_model_hash.py
 
 # Model checkpoints (large files)
 checkpoints/
