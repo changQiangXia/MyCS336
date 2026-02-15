@@ -29,6 +29,7 @@ git status
 
 ### 3. 提交（Commit）
 
+**作业1提交示例**：
 ```bash
 # 创建第一个提交
 git commit -m "feat: 完成作业1 - Basics
@@ -44,6 +45,26 @@ git commit -m "feat: 完成作业1 - Basics
 - BPE 训练从 O(V×N×M) 优化到 O(V×K×M)
 - 训练速度从 2.3s 提升到 0.8s
 - 使用四位一体数据结构实现增量更新"
+```
+
+**作业2提交示例**：
+```bash
+# 提交作业2
+git commit -m "feat: 完成作业2 - Systems
+
+- 实现 FlashAttention2 (PyTorch版本)
+  - Online Softmax + Tiling 算法
+  - 支持前向/反向传播和 Causal Mask
+- 实现 DDP (Distributed Data Parallel)
+  - Individual Parameters 版本
+  - Bucketed 版本 (梯度分桶同步)
+- 实现 Sharded Optimizer (ZeRO-1风格)
+  - 优化器状态分片
+  - 梯度聚合与参数广播
+- 修复 Windows 分布式训练兼容性问题
+  - 处理 Gloo 后端不支持 ReduceOp.AVG
+  - 设置 USE_LIBUV=0 环境变量
+- 测试通过率: 12/14 (Windows环境)"
 ```
 
 ### 4. 创建 GitHub 仓库并推送
@@ -85,7 +106,7 @@ git push -u origin main
 
 ## 后续作业更新流程
 
-做完作业2后，按以下流程更新：
+做完作业后，按以下流程更新：
 
 ```bash
 # 进入项目目录
@@ -94,18 +115,30 @@ cd D:\pythonProjects\CS336
 # 查看修改了哪些文件
 git status
 
-# 添加作业2的文件
-git add 2/
+# 添加作业文件
+git add 1/  # 作业1
+git add 2/  # 作业2
+# ...
 
 # 提交
-git commit -m "feat: 完成作业2 - Systems
+git commit -m "feat: 完成作业X - XXX
 
-- 实现 DDP (Distributed Data Parallel)
-- 实现分片优化器
-- xxxxx"
+- 实现功能 A
+- 实现功能 B
+- 测试通过率: X/Y"
 
 # 推送到 GitHub
 git push
+```
+
+## 查看提交历史
+
+```bash
+# 查看简洁历史
+git log --oneline
+
+# 查看图形化历史
+git log --oneline --graph --all
 ```
 
 ## 常见问题
@@ -127,6 +160,18 @@ git push origin main
 
 ### Q: 不想上传某些文件
 编辑 `.gitignore` 文件，添加要忽略的文件/文件夹。
+
+### Q: 如何撤销修改
+```bash
+# 撤销工作区的修改（未 add）
+git checkout -- 文件名
+
+# 撤销暂存区的修改（已 add 未 commit）
+git reset HEAD 文件名
+
+# 撤销最后一次 commit（保留修改）
+git reset --soft HEAD~
+```
 
 ## 验证上传成功
 

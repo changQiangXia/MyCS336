@@ -1,7 +1,12 @@
+# Fix for Windows PyTorch distributed - must be set before importing torch.distributed
+import os
+os.environ["USE_LIBUV"] = "0"
+os.environ["MASTER_ADDR"] = "127.0.0.1"
+os.environ["MASTER_PORT"] = "29500"
+
 from typing import TypeVar
 import numpy as np
 import pytest
-import os
 from pathlib import Path
 import torch
 from torch import Tensor

@@ -75,3 +75,7 @@ checkpoints/
 *.log
 wandb/
 logs/
+
+# Test outputs
+test_output.txt
+test_results.xml

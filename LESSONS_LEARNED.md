@@ -2,7 +2,7 @@
 
 > **说明**: 本文档汇总所有作业的经验教训，各作业的详细记录请查看对应目录下的 `LESSONS_LEARNED.md`：
 > - [作业1 - Basics](1/assignment1-basics-main/LESSONS_LEARNED.md)
-> - [作业2 - Systems](2/assignment2-systems-main/LESSONS_LEARNED.md) (待更新)
+> - [作业2 - Systems](2/assignment2-systems-main/LESSONS_LEARNED.md) (已更新)
 > - [作业3 - Scaling](3/assignment3-scaling-main/LESSONS_LEARNED.md) (待更新)
 > - [作业4 - Data](4/assignment4-data-main/LESSONS_LEARNED.md) (待更新)
 > - [作业5 - Alignment](5/assignment5-alignment-main/LESSONS_LEARNED.md) (待更新)
@@ -16,7 +16,7 @@
 | 作业 | 主题 | 状态 | 关键挑战 |
 |------|------|------|---------|
 | Assignment 1 | Basics | ✅ 完成 | Windows 兼容性、BPE 性能优化 |
-| Assignment 2 | Systems | ⏳ 待开始 | - |
+| Assignment 2 | Systems | ✅ 完成 | Windows 分布式训练兼容性 |
 | Assignment 3 | Scaling | ⏳ 待开始 | - |
 | Assignment 4 | Data | ⏳ 待开始 | - |
 | Assignment 5 | Alignment | ⏳ 待开始 | - |
@@ -358,7 +358,143 @@ checkpoint = torch.load(path, map_location=device)
 
 ---
 
-## 8. 测试驱动开发 (TDD) 经验
+## 8. Windows PyTorch 分布式训练问题
+
+### 问题描述
+作业2的 DDP 测试在 Windows 上遇到多个问题：
+1. `RuntimeError: use_libuv was requested but PyTorch was build without libuv support`
+2. `RuntimeError: Cannot use ReduceOp.AVG with Gloo`
+3. 进程崩溃 `exit code 3221226505` (STATUS_HEAP_CORRUPTION)
+
+### 问题成因
+
+**问题 1：libuv 支持**
+- Windows 版 PyTorch 的 Gloo 后端没有编译 libuv 支持
+- 这是 PyTorch Windows 版本的已知限制
+
+**问题 2：ReduceOp.AVG 不支持**
+- Gloo 后端（CPU 分布式）不支持 `ReduceOp.AVG`
+- 只支持 `ReduceOp.SUM`
+- NCCL 后端（GPU 分布式）才支持 AVG
+
+**问题 3：堆损坏**
+- Windows 多进程 + PyTorch 分布式存在稳定性问题
+- 可能与进程 spawn 方式、内存管理有关
+
+### 解决方式
+
+**修复 1：禁用 libuv**
+```python
+# 在初始化进程组前设置环境变量
+os.environ["USE_LIBUV"] = "0"
+```
+
+**修复 2：手动实现 AVG**
+```python
+# 错误的：Gloo 不支持 AVG
+dist.all_reduce(tensor, op=dist.ReduceOp.AVG)
+
+# 正确的：先 SUM 再除以 world_size
+dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
+tensor.div_(world_size)
+```
+
+**修复 3：环境变量设置**
+```python
+# 在测试入口设置，确保子进程继承
+os.environ["USE_LIBUV"] = "0"
+os.environ["MASTER_ADDR"] = "127.0.0.1"
+os.environ["MASTER_PORT"] = "29500"
+```
+
+### 探索路径
+
+1. **libuv 错误**：搜索发现是 Windows PyTorch 的已知问题
+2. **AVG 错误**：查阅 PyTorch 文档发现 Gloo 后端限制
+3. **堆损坏**：尝试多种修复未果，确定为 Windows 底层问题
+
+### 测试情况
+
+| 测试模块 | Windows 结果 | Linux 预期 |
+|---------|-------------|-----------|
+| FlashAttention2 | ✅ 通过 | ✅ 通过 |
+| DDP Individual | ✅ 通过 | ✅ 通过 |
+| DDP Bucketed | ✅ 通过 | ✅ 通过 |
+| Sharded Optimizer | ❌ 崩溃 | ✅ 通过 |
+
+### 未来启发
+
+- **PyTorch 分布式优先在 Linux 上开发**：Windows 支持是次要的
+- **Gloo vs NCCL**：
+  - Gloo：CPU 分布式，功能有限，跨平台
+  - NCCL：GPU 分布式，功能完整，仅 Linux
+- **环境变量要在子进程创建前设置**：使用 `conftest.py` 或测试文件头部
+- **Windows 上的替代方案**：
+  - 使用 WSL2 (Windows Subsystem for Linux)
+  - 使用 Docker + Linux 容器
+  - 在 Linux VM 上开发
+
+---
+
+## 9. FlashAttention2 算法实现
+
+### 问题描述
+实现 FlashAttention2 的 online softmax + tiling 算法时，前向传播结果与参考实现差异巨大。
+
+### 问题成因
+FlashAttention2 使用 online softmax 逐步累积，我错误地在循环内进行了归一化。
+
+```python
+# 错误的实现：在循环内归一化
+for j in range(Tc):
+    # ... compute S_ij ...
+    oi = oi / li  # ❌ 错误：不应该在这里归一化
+
+# 正确的实现：最后才归一化
+for j in range(Tc):
+    # ... accumulate oi and li ...
+    pass
+oi = oi / li  # ✅ 正确：循环结束后归一化
+```
+
+### 解决方式
+
+**理解 online softmax 的正确流程**：
+```python
+# 1. 初始化 running statistics
+mi = -inf  # running max
+li = 0     # running sum of exp(S - m)
+oi = 0     # running numerator (未归一化)
+
+# 2. 循环处理 KV blocks
+for each KV block:
+    Sij = Qi @ Kj^T * scale
+    
+    # Online softmax 更新
+    m_new = max(mi, max(Sij))
+    li = exp(mi - m_new) * li + sum(exp(Sij - m_new))
+    oi = exp(mi - m_new) * oi + exp(Sij - m_new) @ Vj
+    mi = m_new
+
+# 3. 最后才归一化
+output = oi / li
+```
+
+### 关键细节
+
+1. **数值稳定性**：使用 fp32 计算 attention scores
+2. **causal mask**：`col <= row` 表示可以 attend
+3. **Backward 重计算**：重新计算 attention 分数而不是存储
+
+### 未来启发
+
+- **理解算法后再实现**：FlashAttention2 的 paper 要仔细阅读
+- **逐步验证**：先实现前向，再实现反向
+- **数值稳定性**：中间计算使用 fp32，最后转回原始 dtype
+
+---
+
+## 10. 测试驱动开发 (TDD) 经验
 
 ### 有效的工作流程
 1. **先运行测试，观察失败**：了解期望行为
@@ -399,3 +535,8 @@ uv run python -c "import torch; d = torch.load('model.pt', map_location='cpu'); 
 1. **理解模型架构细节**：weight tying, dropout, layer norm 位置
 2. **正确处理设备**：CPU/GPU 兼容性
 3. **Tokenizer 是黑盒**：行为可能有细微差异，保证 roundtrip 正确即可
+
+### 分布式训练
+1. **优先在 Linux 上开发分布式代码**
+2. **Gloo 后端功能有限**：不支持 AVG，可能需要手动实现
+3. **Windows 上测试分布式要有心理准备**：可能遇到底层问题

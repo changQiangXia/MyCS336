@@ -69,8 +69,10 @@ class ToyModelWithTiedWeights(nn.Module):
 
 
 def _setup_process_group(rank, world_size, backend):
-    os.environ["MASTER_ADDR"] = "localhost"
-    os.environ["MASTER_PORT"] = "12390"
+    # Fix for Windows PyTorch distributed
+    os.environ["USE_LIBUV"] = "0"
+    os.environ["MASTER_ADDR"] = "127.0.0.1"
+    os.environ["MASTER_PORT"] = "29500"
     # https://discuss.pytorch.org/t/should-local-rank-be-equal-to-torch-cuda-current-device/150873/2
     if torch.cuda.is_available():
         device_count = torch.cuda.device_count()
