@@ -5,12 +5,12 @@
 | 模块 | 测试情况 | 状态 |
 |------|---------|------|
 | FlashAttention2 PyTorch | 2/2 passed | ✅ 完成 |
-| FlashAttention2 Triton | 2/2 skipped | ⚠️ 需要GPU |
+| FlashAttention2 Triton | 2/2 passed | ✅ 完成 |
 | DDP Individual | 2/2 passed | ✅ 完成 |
 | DDP Bucketed | 6/6 passed | ✅ 完成 |
 | Sharded Optimizer | 2/2 failed | ❌ Windows限制 |
 
-**总计**: 12/14 passed (85.7%)
+**总计**: 14/16 passed (87.5%)
 
 ---
 
@@ -103,7 +103,79 @@ os.environ["MASTER_PORT"] = "29500"
 
 ---
 
-## 3. DDP 实现要点
+## 3. PyTorch CUDA 版本安装与 uv 冲突
+
+### 问题描述
+
+安装 CUDA 版本 PyTorch 后，运行 `uv run python` 时发现 CUDA 仍然不可用：`torch.cuda.is_available()` 返回 `False`。
+
+### 问题成因
+
+**uv 依赖管理冲突**：
+1. `pyproject.toml` 中指定了 `torch~=2.6.0`（CPU 版本）
+2. 手动安装 `torch==2.6.0+cu118`（CUDA 版本）成功
+3. 运行 `uv run` 时，uv 检测到 pyproject.toml 的依赖与实际安装不符
+4. uv **自动重新安装** CPU 版本，覆盖 CUDA 版本
+
+```bash
+# 现象：安装 CUDA 版本成功
+$ uv pip install torch==2.6.0+cu118
++ torch==2.6.0+cu118
+
+# 但运行时被覆盖
+$ uv run python -c "import torch; print(torch.cuda.is_available())"
+# uv 自动重装...
+CUDA available: False  # 被覆盖回 CPU 版本
+```
+
+### 解决方式
+
+**需要修改两个 pyproject.toml 文件**：
+
+1. **主项目** `pyproject.toml`：
+```toml
+# 原配置
+dependencies = [
+    "torch~=2.6.0; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+]
+
+# 修改为：注释掉 torch 依赖
+dependencies = [
+    # "torch~=2.6.0; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+]
+```
+
+2. **cs336-basics** `cs336-basics/pyproject.toml`：
+```toml
+# 同样注释掉 torch 依赖
+dependencies = [
+    # "torch~=2.6.0; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+]
+```
+
+3. **重新安装 CUDA 版本**：
+```bash
+uv pip install torch==2.6.0+cu118 --index-url https://download.pytorch.org/whl/cu118
+```
+
+### 探索路径
+
+1. **初次安装 CUDA 版本成功**：显示 `+ torch==2.6.0+cu118`
+2. **验证时失败**：`torch.cuda.is_available()` 仍为 `False`
+3. **观察 uv 行为**：发现 `uv run` 自动重新安装依赖
+4. **检查 pyproject.toml**：发现两处都声明了 torch 依赖
+5. **注释依赖并重新安装**：问题解决
+
+### 未来启发
+
+- **uv 会强制同步 pyproject.toml 与实际环境**：如果两者不符，会自动重新安装
+- **手动安装 PyTorch 版本前，先注释 pyproject.toml 中的依赖**
+- **检查所有子模块的 pyproject.toml**：cs336-basics 也有 torch 依赖
+- **验证时使用 `uv run`**：确保 uv 不会自动覆盖已安装的包
+
+---
+
+## 4. DDP 实现要点
 
 ### Individual Parameters 版本
 
@@ -146,7 +218,7 @@ for param in self.module.parameters():
 
 ---
 
-## 4. Sharded Optimizer (ZeRO-1) 实现
+## 5. Sharded Optimizer (ZeRO-1) 实现
 
 ### 核心思想
 
@@ -186,7 +258,7 @@ class ShardedOptimizer:
 
 ---
 
-## 5. 测试命令
+## 6. 测试命令
 
 ```bash
 # 运行所有测试
@@ -203,7 +275,7 @@ uv run pytest tests/ -v > test_output.txt 2>&1
 
 ---
 
-## 6. 经验总结
+## 7. 经验总结
 
 ### Windows 分布式训练建议
 
@@ -213,6 +285,13 @@ uv run pytest tests/ -v > test_output.txt 2>&1
 4. **Gloo vs NCCL**：
    - Gloo：CPU 分布式，功能有限，跨平台
    - NCCL：GPU 分布式，功能完整，仅 Linux
+
+### uv 包管理注意事项
+
+1. **修改 pyproject.toml 前先备份**
+2. **手动安装 PyTorch 前注释掉依赖声明**
+3. **检查所有子模块的 pyproject.toml**
+4. **使用 `uv pip install` 而非 `pip install`**：确保安装在 uv 管理的虚拟环境中
 
 ### 调试技巧
 

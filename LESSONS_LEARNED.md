@@ -16,7 +16,7 @@
 | 作业 | 主题 | 状态 | 关键挑战 |
 |------|------|------|---------|
 | Assignment 1 | Basics | ✅ 完成 | Windows 兼容性、BPE 性能优化 |
-| Assignment 2 | Systems | ✅ 完成 | Windows 分布式训练兼容性 |
+| Assignment 2 | Systems | ✅ 完成 | Windows 分布式训练兼容性、uv 包管理 |
 | Assignment 3 | Scaling | ⏳ 待开始 | - |
 | Assignment 4 | Data | ⏳ 待开始 | - |
 | Assignment 5 | Alignment | ⏳ 待开始 | - |
@@ -358,7 +358,72 @@ checkpoint = torch.load(path, map_location=device)
 
 ---
 
-## 8. Windows PyTorch 分布式训练问题
+## 8. uv 包管理与 PyTorch CUDA 版本冲突
+
+### 问题描述
+
+安装 CUDA 版本 PyTorch 后，运行 `uv run python` 时发现 CUDA 仍然不可用：`torch.cuda.is_available()` 返回 `False`。
+
+### 问题成因
+
+**uv 依赖管理冲突**：
+1. `pyproject.toml` 中指定了 `torch~=2.6.0`（CPU 版本）
+2. 手动安装 `torch==2.6.0+cu118`（CUDA 版本）成功
+3. 运行 `uv run` 时，uv 检测到 pyproject.toml 的依赖与实际安装不符
+4. uv **自动重新安装** CPU 版本，覆盖 CUDA 版本
+
+```bash
+# 现象：安装 CUDA 版本成功
+$ uv pip install torch==2.6.0+cu118
++ torch==2.6.0+cu118
+
+# 但运行时被覆盖
+$ uv run python -c "import torch; print(torch.cuda.is_available())"
+# uv 自动重装...
+CUDA available: False  # 被覆盖回 CPU 版本
+```
+
+### 解决方式
+
+**需要修改 pyproject.toml 注释掉 torch 依赖**：
+
+1. **主项目** `pyproject.toml`：
+```toml
+dependencies = [
+    # "torch~=2.6.0; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+]
+```
+
+2. **子模块** `cs336-basics/pyproject.toml`：
+```toml
+dependencies = [
+    # "torch~=2.6.0; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+]
+```
+
+3. **重新安装 CUDA 版本**：
+```bash
+uv pip install torch==2.6.0+cu118 --index-url https://download.pytorch.org/whl/cu118
+```
+
+### 探索路径
+
+1. **初次安装 CUDA 版本成功**：显示 `+ torch==2.6.0+cu118`
+2. **验证时失败**：`torch.cuda.is_available()` 仍为 `False`
+3. **观察 uv 行为**：发现 `uv run` 自动重新安装依赖
+4. **检查 pyproject.toml**：发现两处都声明了 torch 依赖
+5. **注释依赖并重新安装**：问题解决
+
+### 未来启发
+
+- **uv 会强制同步 pyproject.toml 与实际环境**：如果两者不符，会自动重新安装
+- **手动安装 PyTorch 版本前，先注释 pyproject.toml 中的依赖**
+- **检查所有子模块的 pyproject.toml**：子模块的依赖也会触发重新安装
+- **uv 与 pip 的区别**：uv 更严格地管理依赖一致性
+
+---
+
+## 9. Windows PyTorch 分布式训练问题
 
 ### 问题描述
 作业2的 DDP 测试在 Windows 上遇到多个问题：
@@ -385,7 +450,6 @@ checkpoint = torch.load(path, map_location=device)
 
 **修复 1：禁用 libuv**
 ```python
-# 在初始化进程组前设置环境变量
 os.environ["USE_LIBUV"] = "0"
 ```
 
@@ -401,17 +465,10 @@ tensor.div_(world_size)
 
 **修复 3：环境变量设置**
 ```python
-# 在测试入口设置，确保子进程继承
 os.environ["USE_LIBUV"] = "0"
 os.environ["MASTER_ADDR"] = "127.0.0.1"
 os.environ["MASTER_PORT"] = "29500"
 ```
-
-### 探索路径
-
-1. **libuv 错误**：搜索发现是 Windows PyTorch 的已知问题
-2. **AVG 错误**：查阅 PyTorch 文档发现 Gloo 后端限制
-3. **堆损坏**：尝试多种修复未果，确定为 Windows 底层问题
 
 ### 测试情况
 
@@ -436,7 +493,7 @@ os.environ["MASTER_PORT"] = "29500"
 
 ---
 
-## 9. FlashAttention2 算法实现
+## 10. FlashAttention2 算法实现
 
 ### 问题描述
 实现 FlashAttention2 的 online softmax + tiling 算法时，前向传播结果与参考实现差异巨大。
@@ -478,6 +535,7 @@ for each KV block:
 
 # 3. 最后才归一化
 output = oi / li
+lse = log(li) + mi  # log-sum-exp for backward
 ```
 
 ### 关键细节
@@ -494,7 +552,7 @@ output = oi / li
 
 ---
 
-## 10. 测试驱动开发 (TDD) 经验
+## 11. 测试驱动开发 (TDD) 经验
 
 ### 有效的工作流程
 1. **先运行测试，观察失败**：了解期望行为
@@ -540,3 +598,9 @@ uv run python -c "import torch; d = torch.load('model.pt', map_location='cpu'); 
 1. **优先在 Linux 上开发分布式代码**
 2. **Gloo 后端功能有限**：不支持 AVG，可能需要手动实现
 3. **Windows 上测试分布式要有心理准备**：可能遇到底层问题
+
+### uv 包管理
+1. **uv 会严格同步 pyproject.toml 与实际环境**
+2. **修改 pyproject.toml 前备份**
+3. **手动安装 PyTorch 前注释掉依赖声明**
+4. **检查所有子模块的 pyproject.toml**
