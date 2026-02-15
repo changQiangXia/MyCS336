@@ -71,6 +71,10 @@ debug_output.txt
 checkpoints/
 *.bin
 
+# FastText language model (126MB)
+models/lid.176.bin
+models/lid.176.ftz
+
 # Logs
 *.log
 wandb/

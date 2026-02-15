@@ -4,7 +4,7 @@
 > - [作业1 - Basics](1/assignment1-basics-main/LESSONS_LEARNED.md)
 > - [作业2 - Systems](2/assignment2-systems-main/LESSONS_LEARNED.md) (已更新)
 > - [作业3 - Scaling](3/assignment3-scaling-main/LESSONS_LEARNED.md) (已完成)
-> - [作业4 - Data](4/assignment4-data-main/LESSONS_LEARNED.md) (待更新)
+> - [作业4 - Data](4/assignment4-data-main/LESSONS_LEARNED.md) (已完成)
 > - [作业5 - Alignment](5/assignment5-alignment-main/LESSONS_LEARNED.md) (待更新)
 
 ## 概览
@@ -18,7 +18,7 @@
 | Assignment 1 | Basics | ✅ 完成 | Windows 兼容性、BPE 性能优化 |
 | Assignment 2 | Systems | ✅ 完成 | Windows 分布式训练兼容性、uv 包管理 |
 | Assignment 3 | Scaling | ✅ 完成 | API 参数验证、幂律拟合、Mock API 设计 |
-| Assignment 4 | Data | ⏳ 待开始 | - |
+| Assignment 4 | Data | ✅ 完成 | fasttext Windows 兼容性、MinHash 去重 |
 | Assignment 5 | Alignment | ⏳ 待开始 | - |
 
 ---
@@ -687,3 +687,196 @@ uv run python -c "import torch; d = torch.load('model.pt', map_location='cpu'); 
 2. **修改 pyproject.toml 前备份**
 3. **手动安装 PyTorch 前注释掉依赖声明**
 4. **检查所有子模块的 pyproject.toml**
+
+---
+
+---
+
+## 13. Windows 上 fasttext 预编译包
+
+### 问题描述
+安装 `fasttext>=0.9.3` 时需要从源码编译 C++ 扩展，Windows 上缺少 Visual Studio Build Tools 导致失败。
+
+### 解决方案
+使用 `fasttext-wheel` 替代，它是预编译的 wheel 包：
+
+```toml
+# pyproject.toml
+dependencies = [
+    # "fasttext>=0.9.3",  # ❌ 需要编译
+    "fasttext-wheel>=0.9.2",  # ✅ 预编译版本
+]
+```
+
+修改后必须重新生成锁文件：
+```bash
+rm uv.lock
+uv lock
+```
+
+### 未来启发
+- **Windows 优先使用 wheel 包**：避免编译依赖
+- **修改依赖后重新 lock**：否则旧依赖仍生效
+- **fasttext-wheel 是 drop-in 替代**：API 完全相同
+
+---
+
+## 14. MinHash + LSH 模糊去重
+
+### 问题描述
+实现文档级别的模糊去重，需要高效处理大规模数据。
+
+### 核心算法
+```python
+def minhash_deduplication(docs, num_hashes=100, num_bands=10, 
+                          ngrams=5, threshold=0.8):
+    # 1. 生成 n-gram shingles
+    shingles = [set(' '.join(words[i:i+n]) for i in range(len(words)-n+1))
+                for words in docs]
+    
+    # 2. MinHash 签名
+    signatures = []
+    for shingle_set in shingles:
+        sig = [min(mmh3.hash(s, seed=i) for s in shingle_set) 
+               for i in range(num_hashes)]
+        signatures.append(sig)
+    
+    # 3. LSH 分桶
+    rows_per_band = num_hashes // num_bands
+    buckets = defaultdict(list)
+    for doc_idx, sig in enumerate(signatures):
+        for b in range(num_bands):
+            band = tuple(sig[b*rows_per_band:(b+1)*rows_per_band])
+            buckets[(b, band)].append(doc_idx)
+    
+    # 4. 只比较同桶文档
+    duplicates = set()
+    for bucket in buckets.values():
+        for i, j in combinations(bucket, 2):
+            if jaccard_similarity(shingles[i], shingles[j]) >= threshold:
+                duplicates.add(j)  # 标记后出现的为重复
+    
+    return [doc for i, doc in enumerate(docs) if i not in duplicates]
+```
+
+### 关键参数
+| 参数 | 作用 | 典型值 |
+|------|------|--------|
+| `num_hashes` | 签名长度 | 100-500 |
+| `num_bands` | LSH 桶数 | 10-50 |
+| `ngrams` | shingle 大小 | 5 |
+| `threshold` | 相似度阈值 | 0.8 |
+
+### 未来启发
+- **LSH 将 O(N²) 降到 O(N × bucket_size)**
+- **参数需要权衡**：更多 hashes = 更精确但更慢
+- **使用 mmh3 库**：高性能 MurmurHash3
+
+---
+
+## 15. 精确行级去重的业务语义
+
+### 问题描述
+对"去重"的理解有误，测试失败后发现是业务语义理解错误。
+
+### 两种语义对比
+
+**语义 A：保留首次出现**
+```
+File1: [A, B] → [A, B]
+File2: [A, C] → [C]  (A 删除)
+```
+
+**语义 B：跨文件重复全部删除（正确）**
+```
+File1: [A, B] → [B]  (A 在 File2 也出现)
+File2: [A, C] → [C]  (A 删除)
+```
+
+语义 B 用于去除模板内容（页眉、导航栏、版权信息）。
+
+### 实现
+```python
+def exact_line_deduplication(input_files, output_dir):
+    # 统计每行出现在多少文件中
+    line_counts = Counter()
+    for filepath in input_files:
+        with open(filepath) as f:
+            line_counts.update(set(line.strip() for line in f))
+    
+    # 出现在多个文件中的行是"模板"
+    template_lines = {line for line, count in line_counts.items() if count > 1}
+    
+    # 写入文件，删除模板行
+    for filepath in input_files:
+        with open(filepath) as infile, open(output_path, 'w') as outfile:
+            for line in infile:
+                if line.strip() not in template_lines:
+                    outfile.write(line)
+```
+
+### 未来启发
+- **理解业务语义再实现**：与面试官/PM 确认需求
+- **常见于网页数据**：跨文件重复通常是模板
+- **与 MinHash 互补**：精确 vs 模糊
+
+---
+
+## 16. Gopher 质量过滤规则
+
+### 规则实现
+```python
+def gopher_quality_filter(text: str) -> bool:
+    words = text.split()
+    lines = text.split('\n')
+    
+    # 1. 50-100,000 个非符号词
+    non_symbol = [w for w in words if any(c.isalnum() for c in w)]
+    if not (50 <= len(non_symbol) <= 100000):
+        return False
+    
+    # 2. 平均词长 3-10 字符
+    alpha_words = [w for w in words if any(c.isalpha() for c in w)]
+    mean_len = sum(len(w) for w in alpha_words) / len(alpha_words)
+    if not (3 <= mean_len <= 10):
+        return False
+    
+    # 3. <30% 行以省略号结尾
+    ellipsis_ratio = sum(1 for l in lines if l.rstrip().endswith('...')) / len(lines)
+    if ellipsis_ratio > 0.3:
+        return False
+    
+    # 4. ≥80% 词包含字母
+    alpha_ratio = sum(1 for w in words if any(c.isalpha() for c in w)) / len(words)
+    if alpha_ratio < 0.8:
+        return False
+    
+    return True
+```
+
+### 未来启发
+- **启发式规则基于统计观察**
+- **需要平衡严格度**：太严过滤好内容，太松保留垃圾
+- **测试用例是最好的文档**
+
+---
+
+## 17. HTML 文本提取 API 注意点
+
+### 问题描述
+resiliparse 的 `extract_plain_text` 需要字符串输入，不是 bytes。
+
+### 解决方案
+```python
+def extract_text_from_html_bytes(html_bytes: bytes) -> str | None:
+    try:
+        html_str = html_bytes.decode('utf-8', errors='replace')
+        return extract_plain_text(html_str)
+    except Exception:
+        return None
+```
+
+### 未来启发
+- **仔细阅读库文档**：确认参数类型
+- **使用 `errors='replace'`**：处理损坏编码
+- **返回 None 而非抛出异常**：符合测试期望
