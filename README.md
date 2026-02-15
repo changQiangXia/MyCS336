@@ -34,8 +34,15 @@ CS336/
 │       ├── tests/              # 测试用例
 │       └── LESSONS_LEARNED.md  # 作业2经验总结
 │
-├── 3/                          # 作业3: Scaling (待完成)
+├── 3/                          # 作业3: Scaling (已完成)
 │   └── assignment3-scaling-main/
+│       ├── cs336_scaling/      # 核心实现
+│       │   ├── chinchilla_isoflops.py  # IsoFLOPs 分析
+│       │   ├── scaling_api.py   # API 客户端 + Mock API
+│       │   ├── scaling_experiment.py  # 主动实验策略
+│       │   └── utils.py         # 工具函数
+│       ├── tests/              # 测试用例
+│       └── LESSONS_LEARNED.md  # 作业3经验总结
 │
 ├── 4/                          # 作业4: Data (待完成)
 │   └── assignment4-data-main/
@@ -54,7 +61,7 @@ CS336/
 |------|------|-----------|------|
 | Assignment 1 | Basics (基础组件) | 46/46 (100%) | ✅ 完成 |
 | Assignment 2 | Systems (分布式训练) | 14/16 (87.5%) | ✅ 完成 |
-| Assignment 3 | Scaling (扩展法则) | - | ⏳ 待开始 |
+| Assignment 3 | Scaling (扩展法则) | 47/47 (100%) | ✅ 完成 |
 | Assignment 4 | Data (数据处理) | - | ⏳ 待开始 |
 | Assignment 5 | Alignment (模型对齐) | - | ⏳ 待开始 |
 
@@ -175,6 +182,60 @@ uv run pytest tests/ -v > test_output.txt 2>&1
 - 手动实现梯度平均 (SUM + divide)
 - 设置 `USE_LIBUV=0` 环境变量
 - 使用 `127.0.0.1` 替代 `localhost`
+
+---
+
+## 📝 作业3 详细内容
+
+### 实现的功能
+
+#### 1. IsoFLOPs 分析 (`chinchilla_isoflops.py`)
+- ✅ 加载训练数据并分组
+- ✅ 对每个计算预算找到最优模型大小
+- ✅ 拟合幂律缩放定律：N_opt = a × C^b
+- ✅ 预测 10^23 和 10^24 FLOPs 的最优配置
+- ✅ 生成可视化图表
+
+#### 2. 训练 API 封装 (`scaling_api.py`)
+- ✅ 真实 API 客户端（需要 Stanford VPN）
+- ✅ Mock API（无需 VPN，用于测试）
+- ✅ 参数验证（确保符合 API 限制）
+- ✅ 预算追踪（防止超过 2e18 FLOPs）
+
+#### 3. 主动实验策略 (`scaling_experiment.py`)
+- ✅ Chinchilla-style IsoFLOPs 策略
+- ✅ 均匀采样策略
+- ✅ 预算管理（剩余预算检查）
+- ✅ 缩放定律拟合与预测
+
+#### 4. 完整测试套件 (`tests/`)
+- ✅ 47 个单元测试和集成测试
+- ✅ 100% 测试通过率
+- ✅ Mock API 测试（无需真实 API）
+
+### 核心公式
+
+| 公式 | 说明 |
+|------|------|
+| N = 12 × L × d² | 模型参数量计算 |
+| D = C / (6N) | 数据集大小计算 |
+| N_opt = a × C^b | 模型大小缩放定律 |
+| D_opt = c × C^d | 数据集大小缩放定律 |
+
+### 运行方式
+
+```bash
+cd 3/assignment3-scaling-main
+
+# 运行问题1（使用已有数据）
+uv run python run_analysis.py --problem 1
+
+# 运行问题2（使用 Mock API）
+uv run python run_analysis.py --problem 2 --mock
+
+# 运行测试
+uv run python run_analysis.py --test
+```
 
 ---
 

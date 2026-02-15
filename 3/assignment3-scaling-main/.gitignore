@@ -160,3 +160,7 @@ cython_debug/
 #.idea/
 
 .ruff_cache/
+
+# Assignment specific
+results/
+pdf_extracted.txt

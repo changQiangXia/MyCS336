@@ -3,7 +3,7 @@
 > **说明**: 本文档汇总所有作业的经验教训，各作业的详细记录请查看对应目录下的 `LESSONS_LEARNED.md`：
 > - [作业1 - Basics](1/assignment1-basics-main/LESSONS_LEARNED.md)
 > - [作业2 - Systems](2/assignment2-systems-main/LESSONS_LEARNED.md) (已更新)
-> - [作业3 - Scaling](3/assignment3-scaling-main/LESSONS_LEARNED.md) (待更新)
+> - [作业3 - Scaling](3/assignment3-scaling-main/LESSONS_LEARNED.md) (已完成)
 > - [作业4 - Data](4/assignment4-data-main/LESSONS_LEARNED.md) (待更新)
 > - [作业5 - Alignment](5/assignment5-alignment-main/LESSONS_LEARNED.md) (待更新)
 
@@ -17,7 +17,7 @@
 |------|------|------|---------|
 | Assignment 1 | Basics | ✅ 完成 | Windows 兼容性、BPE 性能优化 |
 | Assignment 2 | Systems | ✅ 完成 | Windows 分布式训练兼容性、uv 包管理 |
-| Assignment 3 | Scaling | ⏳ 待开始 | - |
+| Assignment 3 | Scaling | ✅ 完成 | API 参数验证、幂律拟合、Mock API 设计 |
 | Assignment 4 | Data | ⏳ 待开始 | - |
 | Assignment 5 | Alignment | ⏳ 待开始 | - |
 
@@ -549,6 +549,89 @@ lse = log(li) + mi  # log-sum-exp for backward
 - **理解算法后再实现**：FlashAttention2 的 paper 要仔细阅读
 - **逐步验证**：先实现前向，再实现反向
 - **数值稳定性**：中间计算使用 fp32，最后转回原始 dtype
+
+---
+
+---
+
+## 12. Scaling Laws - 幂律拟合与实验设计
+
+### 问题描述
+实现 Chinchilla 论文中的 IsoFLOPs 方法，从训练数据拟合缩放定律，预测最优模型大小。
+
+### 关键实现细节
+
+**1. 幂律拟合的数值稳定性**
+```python
+# 方法1: 直接在原始空间拟合（可能数值不稳定）
+popt, _ = curve_fit(power_law, C, N)  # power_law = a * C^b
+
+# 方法2: 在 log 空间线性拟合（推荐）
+log_C = np.log(C)
+log_N = np.log(N)
+coeffs = np.polyfit(log_C, log_N, 1)  # 线性拟合
+b = coeffs[0]  # 斜率就是幂指数
+a = np.exp(coeffs[1])  # 截距取 exp 得到系数
+```
+
+**2. API 参数验证**
+训练 API 有严格的参数限制，必须预先验证：
+```python
+VALID_RANGES = {
+    'd_model': (64, 1024),
+    'num_layers': (2, 24),
+    'num_heads': (2, 16),
+    'batch_size': {128, 256},  # 离散值
+    'learning_rate': (1e-4, 1e-3),
+    'train_flops': {1e13, 3e13, ...},  # 离散值
+}
+```
+
+**3. Mock API 设计**
+为了在没有 VPN 的情况下测试，设计了 Mock API：
+```python
+class MockTrainingAPI:
+    def __init__(self, seed=42):
+        self.rng = np.random.RandomState(seed)
+        self._cache = {}  # 确保相同配置返回相同结果
+        
+    def _simulate_loss(self, config):
+        # 基于真实 scaling law 的启发式公式
+        N = compute_model_params(config)
+        D = config.train_flops / (6 * N)
+        # L(N, D) = A/N^alpha + B/D^beta + E + noise
+        return base_loss * lr_factor * depth_factor + noise
+```
+
+### 探索路径
+
+1. **理解 IsoFLOPs 曲线**：每个计算预算下，模型大小 vs 损失呈 U 型
+   - 太小：欠参数化，无法拟合数据
+   - 太大：欠训练，数据不足
+   - 中间：最优模型大小
+
+2. **预算管理**：严格跟踪 2e18 FLOPs 预算
+   - 每次查询前检查剩余预算
+   - 相同配置重复查询不计入预算
+
+3. **四舍五入到允许值**：
+   ```python
+   def _round_to_allowed_flops(flops):
+       allowed = sorted(VALID_RANGES['train_flops'])
+       return min(allowed, key=lambda x: abs(x - flops))
+   ```
+
+### 未来启发
+
+- **Scaling Law 是近似关系**：实际数据有噪声，拟合结果用于指导而非绝对预测
+- **预算分配策略很重要**：
+  - 覆盖多个数量级的计算预算
+  - 每个预算测试足够多的模型大小
+  - 留出安全余量防止超支
+- **Mock API 对于开发和测试非常有价值**：
+  - 不需要真实 API 即可验证代码逻辑
+  - 可复现的结果（固定 seed）
+  - 快速的反馈循环
 
 ---
 
